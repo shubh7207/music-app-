@@ -1,0 +1,600 @@
+pip install mutagen pillow customtkinter pygame yt-dlp
+import io
+import os
+import threading
+import customtkinter as ctk
+import pygame
+import yt_dlp
+from mutagen.id3 import ID3, APIC
+from mutagen.mp3 import MP3
+from PIL import Image
+
+# Set Spotify dark theme colors
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("green")
+
+
+class SpotifyApp(ctk.CTk):
+
+  def __init__(self):
+    super().__init__()
+
+    self.title("Spotify Free Downloader & Player")
+    self.geometry("900x650")
+    self.configure(fg_color="#121212")
+
+    # Initialize Pygame Mixer
+    pygame.mixer.init()
+
+    # App Internal Storage (~/.spotify_free_app/offline_downloads)
+    app_data_dir = os.path.join(os.path.expanduser("~"), ".spotify_free_app")
+    self.music_dir = os.path.join(app_data_dir, "offline_downloads")
+    os.makedirs(self.music_dir, exist_ok=True)
+
+    # State variables
+    self.playlist = []
+    self.current_index = 0
+    self.is_paused = False
+    self.song_length = 0
+    self.seek_offset = 0
+
+    # Create Default Placeholder Artwork
+    self.default_cover = self.create_placeholder_art()
+
+    # Grid Configuration
+    self.grid_columnconfigure(1, weight=1)
+    self.grid_rowconfigure(0, weight=1)
+
+    self.build_sidebar()
+    self.build_main_area()
+    self.build_player_bar()
+
+    self.refresh_playlist()
+    self.update_progress_loop()
+
+  def create_placeholder_art(self):
+    """Generates a default dark grey album placeholder image in memory."""
+    img = Image.new("RGB", (60, 60), color="#282828")
+    return ctk.CTkImage(light_image=img, dark_image=img, size=(60, 60))
+
+  # --- UI Layout ---
+
+  def build_sidebar(self):
+    sidebar = ctk.CTkFrame(self, width=200, corner_radius=0, fg_color="#000000")
+    sidebar.grid(row=0, column=0, sticky="nsew")
+
+    logo = ctk.CTkLabel(
+        sidebar,
+        text="Spotify Free",
+        font=("Arial", 22, "bold"),
+        text_color="#1DB954",
+    )
+    logo.pack(padx=20, pady=(25, 20), anchor="w")
+
+    home_btn = ctk.CTkButton(
+        sidebar,
+        text="🏠 Home",
+        fg_color="transparent",
+        text_color="#B3B3B3",
+        anchor="w",
+        hover_color="#282828",
+        font=("Arial", 14),
+    )
+    home_btn.pack(fill="x", padx=10, pady=5)
+
+    library_btn = ctk.CTkButton(
+        sidebar,
+        text="📚 Your Library",
+        fg_color="transparent",
+        text_color="#FFFFFF",
+        anchor="w",
+        hover_color="#282828",
+        font=("Arial", 14),
+    )
+    library_btn.pack(fill="x", padx=10, pady=5)
+
+    storage_btn = ctk.CTkButton(
+        sidebar,
+        text="⬇️ App Downloads",
+        fg_color="transparent",
+        text_color="#B3B3B3",
+        anchor="w",
+        hover_color="#282828",
+        font=("Arial", 14),
+        command=self.open_app_folder,
+    )
+    storage_btn.pack(fill="x", padx=10, pady=5)
+
+  def build_main_area(self):
+    main_frame = ctk.CTkFrame(self, fg_color="#121212", corner_radius=0)
+    main_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+    main_frame.grid_columnconfigure(0, weight=1)
+
+    title = ctk.CTkLabel(
+        main_frame,
+        text="Download & Play Music",
+        font=("Arial", 24, "bold"),
+        text_color="#FFFFFF",
+    )
+    title.pack(anchor="w", pady=(0, 15))
+
+    search_frame = ctk.CTkFrame(
+        main_frame, fg_color="#1E1E1E", corner_radius=10
+    )
+    search_frame.pack(fill="x", pady=(0, 20), ipady=5)
+
+    self.search_entry = ctk.CTkEntry(
+        search_frame,
+        placeholder_text="Search song name or paste link...",
+        fg_color="#2A2A2A",
+        text_color="#FFFFFF",
+        border_width=0,
+        height=40,
+    )
+    self.search_entry.pack(side="left", fill="x", expand=True, padx=15, pady=10)
+
+    download_btn = ctk.CTkButton(
+        search_frame,
+        text="Free Download",
+        fg_color="#1DB954",
+        hover_color="#1ed760",
+        text_color="#000000",
+        font=("Arial", 13, "bold"),
+        height=40,
+        command=self.start_download,
+    )
+    download_btn.pack(side="right", padx=(0, 15), pady=10)
+
+    self.status_label = ctk.CTkLabel(
+        main_frame, text="Ready", text_color="#B3B3B3", font=("Arial", 12)
+    )
+    self.status_label.pack(anchor="w", pady=(0, 10))
+
+    list_label = ctk.CTkLabel(
+        main_frame,
+        text="Downloaded Tracks (App Storage)",
+        font=("Arial", 16, "bold"),
+        text_color="#FFFFFF",
+    )
+    list_label.pack(anchor="w", pady=(5, 5))
+
+    self.playlist_scrollable = ctk.CTkScrollableFrame(
+        main_frame, fg_color="#181818", corner_radius=10
+    )
+    self.playlist_scrollable.pack(fill="both", expand=True)
+
+  def build_player_bar(self):
+    player_bar = ctk.CTkFrame(
+        self, height=100, fg_color="#181818", corner_radius=0
+    )
+    player_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+    # Left: Track Info & Album Art Frame
+    left_info_frame = ctk.CTkFrame(
+        player_bar, fg_color="transparent", width=240
+    )
+    left_info_frame.pack(side="left", padx=15, pady=10)
+
+    # Album Artwork Display Widget
+    self.cover_label = ctk.CTkLabel(
+        left_info_frame, text="", image=self.default_cover
+    )
+    self.cover_label.pack(side="left", padx=(0, 12))
+
+    self.track_label = ctk.CTkLabel(
+        left_info_frame,
+        text="No track playing",
+        font=("Arial", 13, "bold"),
+        text_color="#FFFFFF",
+        anchor="w",
+        wraplength=140,
+        justify="left",
+    )
+    self.track_label.pack(side="left")
+
+    # Center Player Controls & Seekbar
+    center_frame = ctk.CTkFrame(player_bar, fg_color="transparent")
+    center_frame.pack(side="left", expand=True, fill="x", padx=10)
+
+    # Top: Controls
+    ctrl_frame = ctk.CTkFrame(center_frame, fg_color="transparent")
+    ctrl_frame.pack(anchor="center", pady=(5, 2))
+
+    prev_btn = ctk.CTkButton(
+        ctrl_frame,
+        text="⏮",
+        width=35,
+        fg_color="transparent",
+        hover_color="#282828",
+        command=self.prev_song,
+    )
+    prev_btn.pack(side="left", padx=5)
+
+    self.play_btn = ctk.CTkButton(
+        ctrl_frame,
+        text="▶",
+        width=40,
+        height=40,
+        corner_radius=20,
+        fg_color="#FFFFFF",
+        text_color="#000000",
+        hover_color="#B3B3B3",
+        font=("Arial", 14, "bold"),
+        command=self.toggle_play,
+    )
+    self.play_btn.pack(side="left", padx=10)
+
+    next_btn = ctk.CTkButton(
+        ctrl_frame,
+        text="⏭",
+        width=35,
+        fg_color="transparent",
+        hover_color="#282828",
+        command=self.next_song,
+    )
+    next_btn.pack(side="left", padx=5)
+
+    # Bottom: Seekbar
+    seek_frame = ctk.CTkFrame(center_frame, fg_color="transparent")
+    seek_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+    self.time_elapsed_label = ctk.CTkLabel(
+        seek_frame,
+        text="00:00",
+        font=("Arial", 10),
+        text_color="#B3B3B3",
+        width=35,
+    )
+    self.time_elapsed_label.pack(side="left", padx=(0, 5))
+
+    self.seek_slider = ctk.CTkSlider(
+        seek_frame,
+        from_=0,
+        to=100,
+        height=12,
+        progress_color="#1DB954",
+        button_color="#FFFFFF",
+        button_hover_color="#1ed760",
+        command=self.on_seek_release,
+    )
+    self.seek_slider.set(0)
+    self.seek_slider.pack(side="left", fill="x", expand=True)
+
+    self.time_total_label = ctk.CTkLabel(
+        seek_frame,
+        text="00:00",
+        font=("Arial", 10),
+        text_color="#B3B3B3",
+        width=35,
+    )
+    self.time_total_label.pack(side="right", padx=(5, 0))
+
+    # Right: Volume Slider
+    vol_frame = ctk.CTkFrame(player_bar, fg_color="transparent")
+    vol_frame.pack(side="right", padx=15)
+
+    vol_icon = ctk.CTkLabel(vol_frame, text="🔊", text_color="#FFFFFF")
+    vol_icon.pack(side="left", padx=(0, 5))
+
+    vol_slider = ctk.CTkSlider(
+        vol_frame,
+        from_=0,
+        to=1,
+        width=80,
+        command=self.set_volume,
+        number_of_steps=20,
+    )
+    vol_slider.set(0.7)
+    vol_slider.pack(side="right")
+
+  # --- Artwork Extraction Helper ---
+
+  def extract_album_art(self, file_path):
+    """Extracts embedded ID3 album cover art from MP3 file binary"""
+    try:
+      tags = ID3(file_path)
+      for key in tags.keys():
+        if key.startswith("APIC"):  # APIC frame contains cover art
+          image_bytes = tags[key].data
+          raw_image = Image.open(io.BytesIO(image_bytes))
+          raw_image = raw_image.resize((60, 60), Image.Resampling.LANCZOS)
+          return ctk.CTkImage(
+              light_image=raw_image, dark_image=raw_image, size=(60, 60)
+          )
+    except Exception:
+      pass
+    return self.default_cover
+
+  # --- Playback Logic ---
+
+  def play_song(self, index):
+    self.current_index = index
+    song_name = self.playlist[self.current_index]
+    song_path = os.path.join(self.music_dir, song_name)
+
+    # Extract MP3 duration
+    try:
+      audio = MP3(song_path)
+      self.song_length = audio.info.length
+    except Exception:
+      self.song_length = 0
+
+    # Extract Cover Artwork
+    cover_art = self.extract_album_art(song_path)
+    self.cover_label.configure(image=cover_art)
+
+    self.seek_offset = 0
+    self.seek_slider.set(0)
+    self.time_total_label.configure(text=self.format_time(self.song_length))
+
+    pygame.mixer.music.load(song_path)
+    pygame.mixer.music.play()
+
+    self.is_paused = False
+    self.play_btn.configure(text="⏸")
+    self.track_label.configure(text=song_name.rsplit(".", 1)[0])
+
+  # --- Seekbar & Timer Helpers ---
+
+  def format_time(self, seconds):
+    mins = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{mins:02d}:{secs:02d}"
+
+  def update_progress_loop(self):
+    if (
+        pygame.mixer.music.get_busy()
+        and not self.is_paused
+        and self.song_length > 0
+    ):
+      current_pos = (
+          pygame.mixer.music.get_pos() / 1000.0
+      ) + self.seek_offset
+      if current_pos <= self.song_length:
+        progress = (current_pos / self.song_length) * 100
+        self.seek_slider.set(progress)
+        self.time_elapsed_label.configure(text=self.format_time(current_pos))
+
+    self.after(200, self.update_progress_loop)
+
+  def on_seek_release(self, value):
+    if not self.playlist or self.song_length == 0:
+      return
+
+    target_time = (float(value) / 100.0) * self.song_length
+    self.seek_offset = target_time
+    pygame.mixer.music.play(start=target_time)
+
+    if self.is_paused:
+      pygame.mixer.music.pause()
+
+    self.time_elapsed_label.configure(text=self.format_time(target_time))
+
+  def toggle_play(self):
+    if not self.playlist:
+      return
+
+    if pygame.mixer.music.get_busy() or self.is_paused:
+      if self.is_paused:
+        pygame.mixer.music.unpause()
+        self.is_paused = False
+        self.play_btn.configure(text="⏸")
+      else:
+        pygame.mixer.music.pause()
+        self.is_paused = True
+        self.play_btn.configure(text="▶")
+    else:
+      self.play_song(self.current_index)
+
+  def next_song(self):
+    if self.playlist:
+      self.current_index = (self.current_index + 1) % len(self.playlist)
+      self.play_song(self.current_index)
+
+  def prev_song(self):
+    if self.playlist:
+      self.current_index = (self.current_index - 1) % len(self.playlist)
+      self.play_song(self.current_index)
+
+  def set_volume(self, val):
+    pygame.mixer.music.set_volume(float(val))
+
+  # --- Downloader & Storage ---
+
+  def start_download(self):
+    query = self.search_entry.get().strip()
+    if not query:
+      self.status_label.configure(
+          text="Please enter a song name or link.", text_color="#FF5555"
+      )
+      return
+
+    self.status_label.configure(
+        text="Downloading song with cover art... Please wait.",
+        text_color="#1DB954",
+    )
+    threading.Thread(
+        target=self.download_audio, args=(query,), daemon=True
+    ).start()
+
+  def download_audio(self, query):
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": os.path.join(self.music_dir, "%(title)s.%(ext)s"),
+        "default_search": "ytsearch",
+        "writethumbnail": True,  # Download cover art thumbnail
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            },
+            {
+                "key": "FFmpegMetadata",  # Embed title/artist metadata
+            },
+            {
+                "key": "EmbedThumbnail",  # Embed downloaded thumbnail directly into ID3 tags
+            },
+        ],
+        "quiet": True,
+        "nocheckcertificate": True,
+    }
+
+    try:
+      with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([query])
+
+      self.status_label.configure(
+          text="Downloaded with Cover Art! 🔒", text_color="#1DB954"
+      )
+      self.search_entry.delete(0, "end")
+      self.after(500, self.refresh_playlist)
+
+    except Exception as e:
+      self.status_label.configure(
+          text=f"Error downloading: {str(e)}", text_color="#FF5555"
+      )
+
+  def refresh_playlist(self):
+    for widget in self.playlist_scrollable.winfo_children():
+      widget.destroy()
+
+    self.playlist = [
+        f
+        for f in os.listdir(self.music_dir)
+        if f.endswith((".mp3", ".wav", ".ogg"))
+    ]
+
+    if not self.playlist:
+      no_songs = ctk.CTkLabel(
+          self.playlist_scrollable,
+          text="No songs downloaded yet.",
+          text_color="#B3B3B3",
+      )
+      no_songs.pack(pady=20)
+      return
+
+    for idx, song in enumerate(self.playlist):
+      btn = ctk.CTkButton(
+          self.playlist_scrollable,
+          text=f"🎵  {song.rsplit('.', 1)[0]}",
+          anchor="w",
+          fg_color="#1E1E1E",
+          hover_color="#282828",
+          text_color="#FFFFFF",
+          height=40,
+          command=lambda i=idx: self.play_song(i),
+      )
+      btn.pack(fill="x", pady=2, padx=5)
+
+  def open_app_folder(self):
+    if os.name == "nt":
+      os.startfile(self.music_dir)
+    elif os.name == "posix":
+      os.system(f'open "{self.music_dir}"')
+
+
+if __name__ == "__main__":
+  app = SpotifyApp()
+  app.mainloop()
+  def download_audio(self, query):
+        # 1. Check if user provided a direct URL (SoundCloud, Bandcamp, YouTube, etc.)
+        is_url = query.startswith("http://") or query.startswith("https://")
+
+        # 2. Configure multi-platform search order (YouTube Music -> YouTube -> SoundCloud)
+        search_target = query if is_url else f"ytmsearch:{query}"
+
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(self.music_dir, '%(title)s.%(ext)s'),
+            'writethumbnail': True,
+            'postprocessors': [
+                {
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                },
+                {
+                    'key': 'FFmpegMetadata',
+                },
+                {
+                    'key': 'EmbedThumbnail',
+                }
+            ],
+            'quiet': True,
+            'nocheckcertificate': True
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([search_target])
+            
+            self.status_label.configure(text="Downloaded to App Storage! 🔒", text_color="#1DB954")
+            self.search_entry.delete(0, 'end')
+            self.after(500, self.refresh_playlist)
+
+        except Exception as e:
+            # Fallback search if YouTube Music fails
+            if not is_url and "ytmsearch:" in search_target:
+                try:
+                    fallback_target = f"ytsearch:{query}"
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([fallback_target])
+                    self.status_label.configure(text="Downloaded via Fallback Engine! 🔒", text_color="#1DB954")
+                    self.search_entry.delete(0, 'end')
+                    self.after(500, self.refresh_playlist)
+                    return
+                except Exception as fallback_err:
+                    e = fallback_err
+
+            self.status_label.configure(text=f"Error downloading: {str(e)}", text_color="#FF5555")
+            import os
+import yt_dlp
+
+MUSIC_DIR = "music_downloads"  # Set to your app's music directory
+ARTISTS_FILE = "artists.txt"
+
+# Create output folder if it doesn't exist
+os.makedirs(MUSIC_DIR, exist_ok=True)
+
+ydl_opts = {
+    'format': 'bestaudio/best',
+    'outtmpl': os.path.join(MUSIC_DIR, '%(artist,uploader)s/%(album,playlist_title)s/%(title)s.%(ext)s'),
+    'writethumbnail': True,
+    'postprocessors': [
+        {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'},
+        {'key': 'FFmpegMetadata'},
+        {'key': 'EmbedThumbnail'}
+    ],
+    'ignoreerrors': True,  # Keep going if one video fails
+    'quiet': False
+}
+
+def download_artists():
+    if not os.path.exists(ARTISTS_FILE):
+        print(f"Error: {ARTISTS_FILE} not found. Please create it and add artist names.")
+        return
+
+    with open(ARTISTS_FILE, 'r', encoding='utf-8') as f:
+        artists = [line.strip() for line in f if line.strip()]
+
+    print(f"Found {len(artists)} artists to download.\n")
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        for artist in artists:
+            print(f"--- Downloading discography for: {artist} ---")
+            # Uses YouTube Music search to target official artist channel uploads
+            search_query = f"ytmsearch20:{artist} official audio"
+            try:
+                ydl.download([search_query])
+            except Exception as e:
+                print(f"Failed to download for {artist}: {e}")
+
+if __name__ == "__main__":
+    download_artists()
+    python batch_download.py
+    {
+  "version": "1.1.0",
+  "changelog": "- Added Equalizer & Bass Boost\n- Faster MP3 Downloads\n- New Dark Neon Theme",
+  "download_url": "https://raw.githubusercontent.com/your-username/spotify-free-app/main/spotify_clone.py"
+}

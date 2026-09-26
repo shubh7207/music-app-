@@ -22,7 +22,157 @@ class SpotifyApp(ctk.CTk):
     self.title("Spotify Free Downloader & Player")
     self.geometry("900x650")
     self.configure(fg_color="#121212")
+import random
 
+
+def toggle_shuffle(self):
+  self.is_shuffled = not getattr(self, "is_shuffled", False)
+  if self.is_shuffled:
+    random.shuffle(self.playback_queue)
+    self.shuffle_btn.configure(text_color="#1DB954")  # Green active accent
+  else:
+    self.playback_queue = self.original_playlist.copy()
+    self.shuffle_btn.configure(text_color="#FFFFFF")
+import numpy as np
+
+
+def render_visualizer_frame(self, canvas, audio_chunk):
+  # Generates 16 animated bar heights matching real-time audio amplitude
+  canvas.delete("all")
+  fft_data = np.abs(np.fft.rfft(audio_chunk))[:16]
+  for i, val in enumerate(fft_data):
+    bar_height = min(100, int(val * 10))
+    canvas.create_rectangle(
+        i * 20, 100 - bar_height, i * 20 + 15, 100, fill="#1DB954"
+    )
+from plyer import notification
+
+
+def show_track_notification(self, title, artist):
+  notification.notify(
+      title="Now Playing 🎶",
+      message=f"{title} - {artist}",
+      app_name="Spotify Clone",
+      timeout=3,
+  )
+def load_lyrics_for_track(self, artist, title):
+      """Fetches synced lyrics from LrcLib API and parses them into timestamps."""
+      self.parsed_lyrics = []
+      self.lyric_labels = []
+      self.current_lyric_index = -1
+
+      # Clear existing lyric widgets
+      for widget in self.lyrics_scroll.winfo_children():
+        widget.destroy()
+
+      try:
+        url = (
+            f"https://lrclib.net/api/get?artist_name={artist}&track_name={title}"
+        )
+        response = requests.get(url, timeout=4)
+
+        if response.status_code == 200:
+          data = response.json()
+          synced_lrc = data.get("syncedLyrics")
+
+          if synced_lrc:
+            self.parse_lrc_format(synced_lrc)
+            self.render_lyrics_ui()
+            return
+
+        # Fallback if no synced lyrics exist
+        self._display_lyrics_placeholder("No synchronized lyrics found.")
+
+      except Exception as e:
+        self._display_lyrics_placeholder("Could not connect to lyrics server.")
+
+    def parse_lrc_format(self, lrc_string):
+      """Converts raw .lrc string into a sorted list of (seconds, text) tuples."""
+      pattern = re.compile(r"\[(\d{2}):(\d{2}\.\d{2})\](.*)")
+
+      for line in lrc_string.splitlines():
+        match = pattern.match(line.strip())
+        if match:
+          minutes = int(match.group(1))
+          seconds = float(match.group(2))
+          text = match.group(3).strip()
+
+          total_seconds = minutes * 60 + seconds
+          if text:  # Ignore empty timestamp lines
+            self.parsed_lyrics.append((total_seconds, text))
+
+      # Sort chronologically by timestamp
+      self.parsed_lyrics.sort(key=lambda x: x[0])
+
+    def render_lyrics_ui(self):
+      """Renders lyric lines as CustomTkinter labels."""
+      for _, text in self.parsed_lyrics:
+        lbl = ctk.CTkLabel(
+            self.lyrics_scroll,
+            text=text,
+            font=("Arial", 16, "bold"),
+            text_color="#535353",  # Inactive lines are dimmed
+            anchor="center",
+            wraplength=500,
+        )
+        lbl.pack(fill="x", pady=8)
+        self.lyric_labels.append(lbl)
+
+    def _display_lyrics_placeholder(self, text):
+      lbl = ctk.CTkLabel(
+          self.lyrics_scroll,
+          text=text,
+          font=("Arial", 14),
+          text_color="#A7A7A7",
+      )
+      lbl.pack(pady=40)
+def update_synced_lyrics(self, current_sec):
+      """Highlights current active line and scrolls view smoothly."""
+      if not self.parsed_lyrics or not self.lyric_labels:
+        return
+
+      # Find active lyric index matching current playback position
+      active_idx = -1
+      for i, (timestamp, _) in enumerate(self.parsed_lyrics):
+        if current_sec >= timestamp:
+          active_idx = i
+        else:
+          break
+
+      # If lyric index changed, update UI highlighting and auto-scroll
+      if active_idx != self.current_lyric_index and active_idx != -1:
+        # Dim previous line
+        if self.current_lyric_index != -1:
+          self.lyric_labels[self.current_lyric_index].configure(
+              text_color="#535353", font=("Arial", 16, "bold")
+          )
+
+        # Highlight current line in Spotify green/white
+        self.lyric_labels[active_idx].configure(
+            text_color="#1DB954", font=("Arial", 20, "bold")
+        )
+        self.current_lyric_index = active_idx
+
+        # Calculate scroll position ratio (0.0 to 1.0)
+        total_lines = len(self.lyric_labels)
+        scroll_ratio = active_idx / float(total_lines)
+
+        # Smoothly scroll container to target line
+        self.lyrics_scroll._parent_canvas.yview_moveto(
+            max(0.0, scroll_ratio - 0.2)
+        )
+def play_song(self, song_filename):
+      # ... Existing audio playback code ...
+
+      # Extract artist and track title from filename
+      clean_name = song_filename.rsplit(".", 1)[0]
+      if " - " in clean_name:
+        artist, title = clean_name.split(" - ", 1)
+      else:
+        artist, title = "", clean_name
+
+      # Fetch and start lyrics sync
+      self.load_lyrics_for_track(artist, title)
     # Initialize Pygame Mixer
     pygame.mixer.init()
 
@@ -598,3 +748,64 @@ if __name__ == "__main__":
   "changelog": "- Added Equalizer & Bass Boost\n- Faster MP3 Downloads\n- New Dark Neon Theme",
   "download_url": "https://raw.githubusercontent.com/your-username/spotify-free-app/main/spotify_clone.py"
 }
+import customtkinter as ctk
+
+class SpotifyApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        # Register global keyboard shortcuts
+        self.bind_all("<space>", self.on_space_pressed)
+        self.bind_all("<Right>", lambda event: self.next_track())
+        self.bind_all("<Left>", lambda event: self.prev_track())
+        self.bind_all("<Up>", lambda event: self.adjust_volume(0.05))
+        self.bind_all("<Down>", lambda event: self.adjust_volume(-0.05))
+
+    def on_space_pressed(self, event):
+        """Toggles Play/Pause unless the user is actively typing in an entry field."""
+        focused_widget = self.focus_get()
+
+        if isinstance(focused_widget, (ctk.CTkEntry, ctk.CTkOptionMenu)) or "entry" in str(type(focused_widget)).lower():
+            return
+
+        self.toggle_play_pause()
+        return "break"
+
+    def toggle_play_pause(self):
+        """Play/Pause toggle logic."""
+        if hasattr(self, "is_playing") and self.is_playing:
+            self.is_playing = False
+            self.play_pause_btn.configure(text="▶")
+            self.status_label.configure(text="Paused ⏸️", text_color="#E5C07B")
+        else:
+            self.is_playing = True
+            self.play_pause_btn.configure(text="⏸")
+            self.status_label.configure(text="Playing ▶️", text_color="#1DB954")
+
+    def next_track(self):
+        """Skip to next track logic."""
+        self.status_label.configure(text="Skipped to Next Track ⏭️", text_color="#1DB954")
+
+    def prev_track(self):
+        """Previous track logic."""
+        self.status_label.configure(text="Skipped to Previous Track ⏮️", text_color="#1DB954")
+
+    def adjust_volume(self, delta):
+        """Adjust volume up or down by delta (e.g. +/- 0.05)."""
+        if hasattr(self, "current_volume"):
+            new_vol = max(0.0, min(1.0, self.current_volume + delta))
+            self.current_volume = new_vol
+            if hasattr(self, "volume_slider"):
+                self.volume_slider.set(new_vol)
+            self.status_label.configure(text=f"Volume: {int(new_vol * 100)}%", text_color="#1DB954")
+import requests
+
+
+def fetch_lyrics(self, artist, title):
+  try:
+    url = f"https://lrclib.net/api/get?artist_name={artist}&track_name={title}"
+    response = requests.get(url, timeout=3).json()
+    synced_lyrics = response.get("syncedLyrics", "No synced lyrics found.")
+    return synced_lyrics
+  except Exception:
+    return "Lyrics unavailable."
